@@ -5,6 +5,7 @@ from __future__ import print_function
 import getpass
 import sys
 import re
+import signal
 
 from minecraft import authentication
 from minecraft.exceptions import YggdrasilError
@@ -20,26 +21,36 @@ def get_options():
 
     options["password"] = getpass.getpass("Enter your password: ")
 
-    #options["address"] = input("Enter server: ")
-    options["address"] = "localhost"
-    options["port"] = 25565
-
     return options
 
 
 def main():
-    options = get_options()
 
     auth_token = authentication.AuthenticationToken()
-    
     try:
-        auth_token.authenticate(options["username"], options["password"])
-    except YggdrasilError as e:
-        print(e)
-        sys.exit()
+        with open('minecraft.auth', 'r') as f:
+            auth_token.client_token, auth_token.access_token = f.read().splitlines()
+
+        # Library has issues need to do some hackey stuff to make sure it works.
+        # I would use validate, but that would require some rewriting as well.
+        auth_token.username = "refresh"
+        auth_token.refresh()
+    except (IOError, YggdrasilError):
+        # IF there is no authentication file authenticate using username and password
+        try:
+            options = get_options()
+            auth_token.authenticate(options["username"], options["password"])
+        except YggdrasilError as e:
+            print(e)
+            sys.exit()
+
+    with open('minecraft.auth', 'w') as fout:
+        fout.write(auth_token.client_token + '\n')
+        fout.write(auth_token.access_token)
+
     print("Logged in as %s..." % auth_token.username)
     connection = Connection(
-        options["address"], options["port"], auth_token=auth_token)
+        "localhost", 25565, auth_token=auth_token)
 
     def handle_join_game(join_game_packet):
         print('Connected.')
@@ -54,9 +65,19 @@ def main():
     connection.register_packet_listener(
         print_chat, clientbound.play.ChatMessagePacket)
 
+    global connected
+    connected = True
+
+    def disconnect(disconnect_packet):
+        print("You were disconnected: %s" % disconnect_packet.json_data)
+        global connected
+        connected = False
+
+    connection.register_packet_listener(disconnect, 
+            clientbound.play.DisconnectPacket)
     connection.connect()
 
-    while True:
+    while connected:
         try:
             text = input()
             if text == "/respawn":
@@ -71,7 +92,6 @@ def main():
         except KeyboardInterrupt:
             print("Bye!")
             sys.exit()
-
 
 if __name__ == "__main__":
     main()
